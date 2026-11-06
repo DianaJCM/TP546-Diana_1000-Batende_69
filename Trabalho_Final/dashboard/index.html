@@ -68,7 +68,7 @@ ul.log .t{color:var(--muted)} ul.log .k{color:var(--accent);min-width:120px}
 </head>
 <body>
 <header>
-  <h1><span class="leaf"></span>Monitoramento e Irrigação da Planta- Trabalho de Bantende Miheto e Diana Jazmin</h1>
+  <h1><span class="leaf"></span>Monitoramento e Irrigação da Planta</h1>
   <span class="pill" id="pConn">Desconectado</span>
   <span class="pill" id="pDev">Dispositivo: ?</span>
 </header>
@@ -287,6 +287,7 @@ $('fConn').addEventListener('submit', ev => {
         break;
       case 'bomba/estado': setPump(msg.trim().toUpperCase() === 'ON'); break;
       case 'bomba/cmd': setModo(msg); break;
+      case 'modo': setModo(msg); break;
       case 'status': setPill($('pDev'), 'Dispositivo: ' + msg, msg === 'online' ? 'on' : 'off'); break;
       case 'json':
         try { const j = JSON.parse(msg); if (j.modo) setModo(j.modo); } catch(e){}
