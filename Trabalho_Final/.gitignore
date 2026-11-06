@@ -1,0 +1,12 @@
+# Credenciais — nunca subir para o GitHub
+simulacao_python/config.py
+esp32/include/secrets.h
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# PlatformIO
+esp32/.pio/
+esp32/.vscode/

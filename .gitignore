@@ -1,0 +1,7 @@
+config.py
+secrets.h
+__pycache__/
+.pio/
+secrets.h
+__pycache__/
+config.py

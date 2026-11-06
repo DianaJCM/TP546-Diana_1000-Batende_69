@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Painel Planta IoT</title>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+:root{
+  --bg:#f3f5f2; --card:#ffffff; --ink:#1d2a22; --muted:#66756b; --line:#dfe5df;
+  --ok:#2e9d5b; --warn:#e0a82e; --bad:#d9483b; --info:#3a7bd5; --sun:#e98a1d;
+  --accent:#2e7d4f; --track:#e8ece8;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#121815; --card:#1b2420; --ink:#e6eee8; --muted:#93a39a; --line:#2c3833;
+    --track:#2a3530; --accent:#4cb57a;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{font-size:20px;margin:0;flex:1;display:flex;align-items:center;gap:10px}
+.leaf{width:28px;height:28px;border-radius:50% 0 50% 0;background:var(--accent);transform:rotate(-10deg)}
+.pill{padding:4px 12px;border-radius:99px;font-size:13px;font-weight:600;background:var(--track);color:var(--muted)}
+.pill.on{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.pill.off{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+main{max-width:1200px;margin:0 auto;padding:20px;display:grid;gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.card h2{font-size:14px;margin:0 0 10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+form.conn{display:grid;grid-template-columns:2fr 90px 1fr 1fr 1.6fr auto;gap:10px;align-items:end}
+label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);min-width:0}
+button{font:inherit;font-weight:600;padding:9px 16px;border:0;border-radius:8px;cursor:pointer;color:#fff;background:var(--accent)}
+button:disabled{opacity:.4;cursor:not-allowed}
+.gauges{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.gauge{text-align:center}
+.gauge svg{width:100%;max-width:220px}
+.gauge .val{font-size:28px;font-weight:700;margin-top:-28px}
+.gauge .name{color:var(--muted);font-size:13px}
+.row{display:grid;grid-template-columns:1fr 2fr;gap:16px}
+.pump{display:flex;align-items:center;gap:16px}
+.led{width:46px;height:46px;border-radius:50%;background:var(--track);border:3px solid var(--line);transition:.3s}
+.led.on{background:var(--ok);border-color:color-mix(in srgb,var(--ok) 50%,white);box-shadow:0 0 18px var(--ok)}
+.pump b.on{color:var(--ok)}
+.cmds button{opacity:.45;transition:opacity .2s,transform .2s,box-shadow .2s}
+.cmds button.ativo{opacity:1;transform:scale(1.04);box-shadow:0 0 0 3px var(--card),0 0 0 5px currentColor}
+.cmds button.b-on.ativo{color:#fff;box-shadow:0 0 0 3px var(--card),0 0 0 5px var(--ok)}
+.cmds button.b-off.ativo{color:#fff;box-shadow:0 0 0 3px var(--card),0 0 0 5px var(--bad)}
+.cmds button.b-auto.ativo{color:#fff;box-shadow:0 0 0 3px var(--card),0 0 0 5px var(--info)}
+.pump b{font-size:22px;display:block}
+.cmds{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.cmds button{flex:1;min-width:90px}
+.b-on{background:var(--ok)} .b-off{background:var(--bad)} .b-auto{background:var(--info)}
+.meta{margin-top:14px;font-size:13px;color:var(--muted);display:grid;gap:4px}
+canvas{width:100%;height:240px;display:block}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--muted);margin-top:6px;flex-wrap:wrap}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:5px;vertical-align:-2px}
+ul.log{list-style:none;margin:0;padding:0;max-height:220px;overflow:auto;font:12px/1.6 ui-monospace,Consolas,monospace}
+ul.log li{border-bottom:1px solid var(--line);padding:3px 0;display:flex;gap:10px}
+ul.log .t{color:var(--muted)} ul.log .k{color:var(--accent);min-width:120px}
+@media (max-width:900px){
+  form.conn{grid-template-columns:1fr 1fr}
+  .gauges{grid-template-columns:repeat(2,1fr)}
+  .row{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="leaf"></span>Monitoramento e Irrigação da Planta- Trabalho de Bantende Miheto e Diana Jazmin</h1>
+  <span class="pill" id="pConn">Desconectado</span>
+  <span class="pill" id="pDev">Dispositivo: ?</span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Conexão com o broker (MQTT over WebSocket + TLS)</h2>
+    <form class="conn" id="fConn">
+      <label>Host<input id="iHost" value="q7d171c2.ala.us-east-1.emqxsl.com" required></label>
+      <label>Porta<input id="iPort" type="number" value="8084" required></label>
+      <label>Usuário<input id="iUser" value="Batende_Diana" required></label>
+      <label>Senha<input id="iPass" type="password" required autocomplete="current-password"></label>
+      <label>Tópico base<input id="iBase" value="inatel/batende/planta01" required></label>
+      <button id="bConn" type="submit">Conectar</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Sensores</h2>
+    <div class="gauges">
+      <div class="gauge" data-k="temperatura"></div>
+      <div class="gauge" data-k="umidade"></div>
+      <div class="gauge" data-k="solo"></div>
+      <div class="gauge" data-k="luz"></div>
+    </div>
+  </section>
+
+  <div class="row">
+    <section class="card">
+      <h2>Bomba d'água</h2>
+      <div class="pump">
+        <div class="led" id="led"></div>
+        <div><b id="tPump">—</b><span id="tModo" style="color:var(--muted)">Modo: —</span></div>
+      </div>
+      <div class="cmds">
+        <button class="b-on"   data-cmd="ON"   disabled>Ligar</button>
+        <button class="b-off"  data-cmd="OFF"  disabled>Desligar</button>
+        <button class="b-auto" data-cmd="AUTO" disabled>Automático</button>
+      </div>
+      <div class="meta">
+        <span>AUTO: liga com solo ≤ 30 %, desliga com solo ≥ 70 %</span>
+        <span>Segurança: tempo máximo da bomba ligada</span>
+        <span id="tLast">Última leitura: —</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Histórico — umidade do solo</h2>
+      <canvas id="chart"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>Solo (%)</span>
+        <span><i style="background:var(--sun)"></i>Temperatura (°C, eixo direito)</span>
+        <span><i style="background:color-mix(in srgb,var(--info) 25%,transparent)"></i>Bomba ligada</span>
+        <span><i style="background:var(--muted);height:2px"></i>Limites 30 % / 70 %</span>
+      </div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Mensagens recebidas</h2>
+    <ul class="log" id="log"></ul>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const GAUGES = {
+  temperatura:{nome:'Temperatura', min:0, max:50, unit:'°C', dec:1,
+               cor:v => v<25 ? 'var(--ok)' : v<35 ? 'var(--warn)' : 'var(--bad)'},
+  umidade:    {nome:'Umidade do ar', min:0, max:100, unit:'%', dec:1, cor:() => 'var(--info)'},
+  solo:       {nome:'Umidade do solo', min:0, max:100, unit:'%', dec:0,
+               cor:v => v<30 ? 'var(--bad)' : v<70 ? 'var(--warn)' : 'var(--ok)'},
+  luz:        {nome:'Luminosidade', min:0, max:2000, unit:' lx', dec:0, cor:() => 'var(--sun)'}
+};
+const ARC = Math.PI * 80; // comprimento do semicírculo (raio 80)
+
+// ---- monta os gauges
+document.querySelectorAll('.gauge').forEach(el => {
+  const g = GAUGES[el.dataset.k];
+  el.innerHTML = `
+    <svg viewBox="0 0 200 115">
+      <path d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke="var(--track)" stroke-width="18" stroke-linecap="round"/>
+      <path class="arc" d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke="var(--ok)" stroke-width="18"
+            stroke-linecap="round" stroke-dasharray="${ARC}" stroke-dashoffset="${ARC}"
+            style="transition:stroke-dashoffset .6s,stroke .6s"/>
+    </svg>
+    <div class="val">—</div><div class="name">${g.nome}</div>`;
+});
+function setGauge(k, v){
+  const g = GAUGES[k], el = document.querySelector(`.gauge[data-k="${k}"]`);
+  if (!g || !el || isNaN(v)) return;
+  const f = Math.max(0, Math.min(1, (v - g.min) / (g.max - g.min)));
+  const arc = el.querySelector('.arc');
+  arc.style.strokeDashoffset = ARC * (1 - f);
+  arc.style.stroke = g.cor(v);
+  el.querySelector('.val').textContent = v.toFixed(g.dec) + g.unit;
+}
+
+// ---- estado
+const estado = {temperatura:NaN, bomba:false};
+const hist = []; const MAX_PTS = 120;
+
+function setPump(on){
+  estado.bomba = on;
+  $('led').classList.toggle('on', on);
+  $('tPump').textContent = on ? 'LIGADA' : 'DESLIGADA';
+  $('tPump').classList.toggle('on', on);
+}
+function setModo(m){
+  m = (m || '').trim().toUpperCase();
+  if (!['ON','OFF','AUTO'].includes(m)) return;
+  const nomes = {ON:'MANUAL — LIGADA', OFF:'MANUAL — DESLIGADA', AUTO:'AUTOMÁTICO'};
+  $('tModo').textContent = 'Modo: ' + nomes[m];
+  document.querySelectorAll('.cmds button').forEach(b => b.classList.toggle('ativo', b.dataset.cmd === m));
+}
+function setPill(el, txt, cls){ el.textContent = txt; el.className = 'pill ' + (cls||''); }
+
+// ---- gráfico
+function drawChart(){
+  const c = $('chart'), dpr = window.devicePixelRatio || 1;
+  const W = c.clientWidth, H = c.clientHeight;
+  c.width = W*dpr; c.height = H*dpr;
+  const x = c.getContext('2d'); x.scale(dpr, dpr);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const L = 34, R = 34, T = 10, B = 20, w = W-L-R, h = H-T-B;
+  const py = v => T + h - (v/100)*h;           // solo 0–100
+  const pyT = v => T + h - (v/50)*h;           // temperatura 0–50
+  const px = i => L + (hist.length<2 ? 0 : i/(MAX_PTS-1)*w);
+
+  x.font = '11px system-ui'; x.fillStyle = css('--muted'); x.strokeStyle = css('--line');
+  for (let v=0; v<=100; v+=25){ x.beginPath(); x.moveTo(L,py(v)); x.lineTo(L+w,py(v)); x.stroke();
+    x.fillText(v, 6, py(v)+4); x.fillText(v/2, L+w+6, py(v)+4); }
+
+  // faixas com a bomba ligada
+  x.fillStyle = css('--info') + '33';
+  hist.forEach((p,i) => { if (p.bomba && i>0) x.fillRect(px(i-1), T, px(i)-px(i-1), h); });
+
+  // limites 30/70
+  x.setLineDash([5,4]); x.strokeStyle = css('--muted');
+  [30,70].forEach(v => { x.beginPath(); x.moveTo(L,py(v)); x.lineTo(L+w,py(v)); x.stroke(); });
+  x.setLineDash([]);
+
+  const linha = (sel, cor, esc, larg) => {
+    x.strokeStyle = cor; x.lineWidth = larg; x.beginPath();
+    let started = false;
+    hist.forEach((p,i) => { const v = p[sel]; if (isNaN(v)) return;
+      started ? x.lineTo(px(i), esc(v)) : x.moveTo(px(i), esc(v)); started = true; });
+    x.stroke(); x.lineWidth = 1;
+  };
+  linha('temp', css('--sun'), pyT, 1.5);
+  linha('solo', css('--accent'), py, 2.5);
+}
+window.addEventListener('resize', drawChart);
+drawChart();
+
+// ---- log
+function log(sub, payload){
+  const li = document.createElement('li');
+  li.innerHTML = `<span class="t">${new Date().toLocaleTimeString()}</span><span class="k"></span><span class="p"></span>`;
+  li.querySelector('.k').textContent = sub;
+  li.querySelector('.p').textContent = payload.length > 140 ? payload.slice(0,140)+'…' : payload;
+  $('log').prepend(li);
+  while ($('log').children.length > 60) $('log').lastChild.remove();
+}
+
+// ---- preferências (sem a senha)
+try {
+  const p = JSON.parse(localStorage.getItem('painelPlanta') || '{}');
+  ['Host','Port','User','Base'].forEach(k => { if (p[k]) $('i'+k).value = p[k]; });
+} catch(e){}
+
+// ---- MQTT
+let client = null, base = '';
+const cmdBtns = document.querySelectorAll('.cmds button');
+
+$('fConn').addEventListener('submit', ev => {
+  ev.preventDefault();
+  if (client){ client.end(true); client = null; onDisconnected(); return; }
+
+  base = $('iBase').value.trim().replace(/\/+$/,'');
+  const host = $('iHost').value.trim().replace(/^\w+:\/\//,'').replace(/[:/].*$/,'');
+  const port = $('iPort').value.trim();
+  try { localStorage.setItem('painelPlanta', JSON.stringify(
+    {Host:host, Port:port, User:$('iUser').value.trim(), Base:base})); } catch(e){}
+
+  setPill($('pConn'), 'Conectando…');
+  client = mqtt.connect(`wss://${host}:${port}/mqtt`, {
+    username: $('iUser').value.trim(),
+    password: $('iPass').value,
+    clientId: 'painel-pc-' + Math.random().toString(16).slice(2,8),  // ID único
+    clean: true, reconnectPeriod: 4000, connectTimeout: 10000
+  });
+
+  client.on('connect', () => {
+    setPill($('pConn'), 'Conectado', 'on');
+    $('bConn').textContent = 'Desconectar';
+    cmdBtns.forEach(b => b.disabled = false);
+    client.subscribe(base + '/#', {qos:0});
+  });
+  client.on('reconnect', () => setPill($('pConn'), 'Reconectando…'));
+  client.on('close', () => { if (client) setPill($('pConn'), 'Sem conexão', 'off'); cmdBtns.forEach(b => b.disabled = true); });
+  client.on('error', err => { setPill($('pConn'), 'Erro: ' + err.message, 'off'); });
+  client.on('message', (topic, buf) => {
+    const msg = buf.toString(), sub = topic.slice(base.length + 1), v = parseFloat(msg);
+    log(sub, msg);
+    switch (sub){
+      case 'temperatura': estado.temperatura = v; setGauge('temperatura', v); break;
+      case 'umidade': setGauge('umidade', v); break;
+      case 'luz': setGauge('luz', v); break;
+      case 'solo':
+        setGauge('solo', v);
+        hist.push({solo:v, temp:estado.temperatura, bomba:estado.bomba});
+        if (hist.length > MAX_PTS) hist.shift();
+        drawChart();
+        $('tLast').textContent = 'Última leitura: ' + new Date().toLocaleTimeString();
+        break;
+      case 'bomba/estado': setPump(msg.trim().toUpperCase() === 'ON'); break;
+      case 'bomba/cmd': setModo(msg); break;
+      case 'status': setPill($('pDev'), 'Dispositivo: ' + msg, msg === 'online' ? 'on' : 'off'); break;
+      case 'json':
+        try { const j = JSON.parse(msg); if (j.modo) setModo(j.modo); } catch(e){}
+        break;
+    }
+  });
+});
+
+function onDisconnected(){
+  setPill($('pConn'), 'Desconectado');
+  $('bConn').textContent = 'Conectar';
+  cmdBtns.forEach(b => b.disabled = true);
+}
+
+cmdBtns.forEach(b => b.addEventListener('click', () => {
+  if (client && client.connected) client.publish(base + '/bomba/cmd', b.dataset.cmd, {qos:1});
+}));
+</script>
+</body>
+</html>
