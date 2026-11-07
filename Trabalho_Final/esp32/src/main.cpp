@@ -7,6 +7,7 @@
  */
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include "secrets.h"
@@ -35,6 +36,8 @@ const String T_ESTADO = BASE + "/bomba/estado";
 const String T_MODO   = BASE + "/modo";
 const String T_STATUS = BASE + "/status";
 
+WiFiMulti redes;               // várias redes Wi-Fi: conecta na que estiver ao alcance
+bool wifiOk = false;
 WiFiClientSecure redeSegura;
 PubSubClient mqtt(redeSegura);
 
@@ -113,8 +116,20 @@ void setup() {
   analogReadResolution(12);
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_SENHA);
-  Serial.printf("Conectando WiFi %s...\n", WIFI_SSID);
+  // Cadastra todas as redes definidas no secrets.h (WIFI_SSID_1 ... WIFI_SSID_3)
+#ifdef WIFI_SSID_1
+  redes.addAP(WIFI_SSID_1, WIFI_SENHA_1);
+#endif
+#ifdef WIFI_SSID_2
+  redes.addAP(WIFI_SSID_2, WIFI_SENHA_2);
+#endif
+#ifdef WIFI_SSID_3
+  redes.addAP(WIFI_SSID_3, WIFI_SENHA_3);
+#endif
+#ifdef WIFI_SSID          // compatível com o secrets.h antigo (uma rede só)
+  redes.addAP(WIFI_SSID, WIFI_SENHA);
+#endif
+  Serial.println("Procurando redes Wi-Fi conhecidas...");
 
   // TLS: criptografa a conexão (não verifica o certificado — ok para o protótipo)
   redeSegura.setInsecure();
@@ -126,12 +141,15 @@ void setup() {
 void loop() {
   // Wi-Fi e MQTT sem travar o loop
   if (WiFi.status() != WL_CONNECTED) {
+    wifiOk = false;
     if (millis() - ultimoWiFi >= 10000) {
       ultimoWiFi = millis();
-      Serial.println("Reconectando WiFi...");
-      WiFi.disconnect();
-      WiFi.begin(WIFI_SSID, WIFI_SENHA);
+      Serial.println("Procurando redes Wi-Fi conhecidas...");
+      redes.run(5000);   // tenta a rede conhecida com sinal mais forte
     }
+  } else if (!wifiOk) {
+    wifiOk = true;
+    Serial.printf("WiFi OK: %s | IP: %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
   } else if (!mqtt.connected()) {
     if (millis() - ultimoMQTT >= 5000) { ultimoMQTT = millis(); conectarMQTT(); }
   } else {
