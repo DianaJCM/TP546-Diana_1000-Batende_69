@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Simulador Planta IoT</title>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<style>
+:root{--bg:#f3f5f2;--card:#fff;--ink:#1d2a22;--muted:#66756b;--line:#dfe5df;--ok:#2e9d5b;--bad:#d9483b;--info:#3a7bd5;--accent:#2e7d4f;--track:#e8ece8}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121815;--card:#1b2420;--ink:#e6eee8;--muted:#93a39a;--line:#2c3833;--track:#2a3530;--accent:#4cb57a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid var(--line);background:var(--card)}
+header h1{font-size:20px;margin:0;flex:1}
+header a{color:var(--accent);font-weight:600;text-decoration:none}
+.pill{padding:4px 12px;border-radius:99px;font-size:13px;font-weight:600;background:var(--track);color:var(--muted)}
+.pill.on{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.pill.off{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+main{max-width:1000px;margin:0 auto;padding:20px;display:grid;gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.card h2{font-size:14px;margin:0 0 10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+form{display:grid;grid-template-columns:2fr 90px 1fr 1fr 1.6fr 80px;gap:10px;align-items:end}
+label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+input{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);min-width:0}
+.btns{display:flex;gap:10px;margin-top:12px}
+button{font:inherit;font-weight:600;padding:9px 18px;border:0;border-radius:8px;cursor:pointer;color:#fff;background:var(--accent)}
+button.stop{background:var(--bad)}
+button:disabled{opacity:.4;cursor:not-allowed}
+.vals{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;text-align:center}
+.vals b{display:block;font-size:24px}
+.vals span{font-size:12px;color:var(--muted)}
+ul{list-style:none;margin:0;padding:0;max-height:260px;overflow:auto;font:12px/1.6 ui-monospace,Consolas,monospace}
+li{border-bottom:1px solid var(--line);padding:2px 0}
+p.note{font-size:13px;color:var(--muted);margin:10px 0 0}
+@media (max-width:800px){form{grid-template-columns:1fr 1fr}.vals{grid-template-columns:repeat(3,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Simulador de sensores — Planta IoT</h1>
+  <a href="index.html">Abrir painel →</a>
+  <span class="pill" id="pConn">Parado</span>
+</header>
+<main>
+  <section class="card">
+    <h2>Conexão com o broker (MQTT over WebSocket + TLS)</h2>
+    <form id="f">
+      <label>Host<input id="iHost" value="q7d171c2.ala.us-east-1.emqxsl.com" required></label>
+      <label>Porta<input id="iPort" type="number" value="8084" required></label>
+      <label>Usuário<input id="iUser" value="Batende_Diana" required></label>
+      <label>Senha<input id="iPass" type="password" required></label>
+      <label>Tópico base<input id="iBase" value="inatel/batende/simulado" required></label>
+      <label>Intervalo (s)<input id="iInt" type="number" value="5" min="1" required></label>
+    </form>
+    <div class="btns">
+      <button id="bStart">Iniciar simulação</button>
+      <button id="bStop" class="stop" disabled>Parar</button>
+    </div>
+    <p class="note">Simula DHT22 (temperatura/umidade), BH1750 (luz) e sensor de solo, e uma bomba controlada por relé.
+      Use um tópico base diferente do ESP32 real (<code>inatel/batende/planta01</code>) para não misturar os dados.
+      A simulação roda enquanto esta aba estiver aberta.</p>
+  </section>
+
+  <section class="card">
+    <h2>Valores simulados</h2>
+    <div class="vals">
+      <div><b id="vT">—</b><span>Temperatura</span></div>
+      <div><b id="vU">—</b><span>Umidade do ar</span></div>
+      <div><b id="vL">—</b><span>Luz</span></div>
+      <div><b id="vS">—</b><span>Solo</span></div>
+      <div><b id="vB">—</b><span>Bomba</span></div>
+      <div><b id="vM">—</b><span>Modo</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Log</h2>
+    <ul id="log"></ul>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const SOLO_LIGA = 30, SOLO_DESLIGA = 70, MAX_BOMBA_MS = 60000;
+const e = {temperatura:24, umidade:55, luz:300, solo:45, modo:'AUTO', bomba:false, ligadaEm:0};
+let client = null, base = '', timer = null;
+
+const limitar = (v,a,b) => Math.max(a, Math.min(b, v));
+const rnd = (a,b) => a + Math.random()*(b-a);
+
+function log(t){
+  const li = document.createElement('li');
+  li.textContent = new Date().toLocaleTimeString() + '  ' + t;
+  $('log').prepend(li);
+  while ($('log').children.length > 80) $('log').lastChild.remove();
+}
+function pill(txt, cls){ $('pConn').textContent = txt; $('pConn').className = 'pill ' + (cls||''); }
+
+// mesma lógica do simulador.py: passeio aleatório
+function atualizarSensores(){
+  e.temperatura = limitar(e.temperatura + rnd(-0.3,0.3), 10, 45);
+  e.umidade     = limitar(e.umidade + rnd(-1,1), 20, 95);
+  e.luz         = limitar(e.luz + rnd(-40,40), 0, 2000);
+  const secagem = 0.8 + 0.05*(e.temperatura - 20);
+  e.solo = limitar(e.bomba ? e.solo + rnd(4,6) : e.solo - (Math.max(0.3,secagem) + rnd(0,0.4)), 0, 100);
+}
+
+function controlarBomba(){
+  let ligar = e.bomba;
+  if (e.modo === 'ON') ligar = true;
+  else if (e.modo === 'OFF') ligar = false;
+  else { if (e.solo <= SOLO_LIGA) ligar = true; else if (e.solo >= SOLO_DESLIGA) ligar = false; }
+  if (ligar && e.bomba && Date.now() - e.ligadaEm > MAX_BOMBA_MS){
+    log('[SEGURANÇA] Tempo máximo da bomba atingido — desligando.');
+    ligar = false; e.modo = 'AUTO';
+  }
+  if (ligar !== e.bomba){
+    e.bomba = ligar; e.ligadaEm = ligar ? Date.now() : 0;
+    client.publish(base + '/bomba/estado', ligar ? 'ON' : 'OFF', {qos:1, retain:true});
+    log(`[BOMBA] ${ligar ? 'LIGADA' : 'DESLIGADA'} (modo ${e.modo})`);
+  }
+}
+
+function ciclo(){
+  if (!client || !client.connected) return;
+  atualizarSensores(); controlarBomba();
+  const v = {temperatura:e.temperatura.toFixed(1), umidade:e.umidade.toFixed(1),
+             luz:e.luz.toFixed(0), solo:e.solo.toFixed(0)};
+  for (const k in v) client.publish(`${base}/${k}`, v[k], {qos:0});
+  client.publish(base + '/json', JSON.stringify({
+    temperatura:+v.temperatura, umidade:+v.umidade, luz:+v.luz, solo:+v.solo,
+    bomba:e.bomba ? 'ON':'OFF', modo:e.modo, ts:Math.floor(Date.now()/1000)}), {qos:0});
+  $('vT').textContent = v.temperatura + '°C'; $('vU').textContent = v.umidade + '%';
+  $('vL').textContent = v.luz + ' lx';       $('vS').textContent = v.solo + '%';
+  $('vB').textContent = e.bomba ? 'ON' : 'OFF'; $('vM').textContent = e.modo;
+  log(`T=${v.temperatura}°C U=${v.umidade}% Luz=${v.luz}lx Solo=${v.solo}% Bomba=${e.bomba?'ON':'OFF'} (${e.modo})`);
+}
+
+$('bStart').onclick = () => {
+  if (!$('f').reportValidity()) return;
+  base = $('iBase').value.trim().replace(/\/+$/,'');
+  const host = $('iHost').value.trim().replace(/^\w+:\/\//,'').replace(/[:/].*$/,'');
+  pill('Conectando…');
+  client = mqtt.connect(`wss://${host}:${$('iPort').value}/mqtt`, {
+    username: $('iUser').value.trim(), password: $('iPass').value,
+    clientId: 'simulador-web-' + Math.random().toString(16).slice(2,8),
+    clean: true, reconnectPeriod: 4000,
+    will: {topic: base + '/status', payload: 'offline', qos: 1, retain: true}
+  });
+  client.on('connect', () => {
+    pill('Simulando', 'on'); log('Conectado ao broker!');
+    client.publish(base + '/status', 'online', {qos:1, retain:true});
+    client.publish(base + '/bomba/estado', e.bomba ? 'ON':'OFF', {qos:1, retain:true});
+    client.subscribe(base + '/bomba/cmd', {qos:1});
+    log('Assinando: ' + base + '/bomba/cmd');
+    clearInterval(timer);
+    timer = setInterval(ciclo, Math.max(1, +$('iInt').value) * 1000);
+    ciclo();
+  });
+  client.on('message', (t, buf) => {
+    const cmd = buf.toString().trim().toUpperCase();
+    log('[CMD] ' + t + ' -> ' + cmd);
+    if (['ON','OFF','AUTO'].includes(cmd)){ e.modo = cmd; controlarBomba(); $('vM').textContent = e.modo; }
+  });
+  client.on('reconnect', () => pill('Reconectando…'));
+  client.on('error', err => { pill('Erro: ' + err.message, 'off'); log('Erro: ' + err.message); });
+  $('bStart').disabled = true; $('bStop').disabled = false;
+};
+
+$('bStop').onclick = () => {
+  clearInterval(timer);
+  if (client){
+    if (client.connected) client.publish(base + '/status', 'offline', {qos:1, retain:true});
+    client.end(false); client = null;
+  }
+  pill('Parado'); log('Simulação parada.');
+  $('bStart').disabled = false; $('bStop').disabled = true;
+};
+</script>
+</body>
+</html>
