@@ -2,7 +2,7 @@
  * ESP32 — Irrigação automática via MQTT (EMQX Cloud, TLS 8883)
  * Trabalho final TP546 — Batende Miheto e Diana Jasmin
  *
- * Hardware: sensor de umidade do solo (ADC GPIO 34) + módulo relé (GPIO 0) + bomba
+ * Hardware: sensor de umidade do solo (ADC GPIO ) + módulo relé (GPIO 0) + bomba
  * Wi-Fi e credenciais MQTT ficam em include/secrets.h (fora do GitHub).
  */
 #include <Arduino.h>
@@ -13,7 +13,7 @@
 #include "secrets.h"
 
 // ------------------------------------------------------------- Pinos
-#define SENSOR_SOLO 34
+#define SENSOR_SOLO 7
 #define RELE        0
 #define RELE_ON     LOW    // relé ativo em nível baixo
 #define RELE_OFF    HIGH
