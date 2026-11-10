@@ -8,8 +8,8 @@
 #define WIFI_SSID_1    "POCO F4 GT JHAZ"
 #define WIFI_SENHA_1   "s19051698"
 
-#define WIFI_SSID_2    "wifi_de_casa"
-#define WIFI_SENHA_2   "senha_2"
+#define WIFI_SSID_2    "WLL-Inatel"
+#define WIFI_SENHA_2   "inatelsemfio"
 
 #define WIFI_SSID_3    "Ivan_5Ghz"
 #define WIFI_SENHA_3   "salima13"
