@@ -37,7 +37,7 @@ p.note{font-size:13px;color:var(--muted);margin:10px 0 0}
 </head>
 <body>
 <header>
-  <h1>Simulador de sensores — Planta IoT</h1>
+  <h1>Simulador de sensores - Monitoramento e Irrigação das Plantas</h1>
   <a href="index.html">Abrir painel →</a>
   <span class="pill" id="pConn">Parado</span>
 </header>
@@ -52,6 +52,11 @@ p.note{font-size:13px;color:var(--muted);margin:10px 0 0}
       <label>Tópico base<input id="iBase" value="inatel/batende/simulado" required></label>
       <label>Intervalo (s)<input id="iInt" type="number" value="5" min="1" required></label>
     </form>
+    <label style="display:flex;flex-direction:row;align-items:center;gap:10px;margin-top:12px;font-size:14px;color:var(--ink)">
+      <input type="checkbox" id="iHibrido" style="width:20px;height:20px">
+      <span><b>Modo híbrido (junto com o ESP32 real):</b> publica só temperatura, umidade do ar e luz.
+      O solo e a bomba ficam por conta do ESP32. Use com o tópico base <code>inatel/batende/planta01</code>.</span>
+    </label>
     <div class="btns">
       <button id="bStart">Iniciar simulação</button>
       <button id="bStop" class="stop" disabled>Parar</button>
@@ -121,9 +126,22 @@ function controlarBomba(){
   }
 }
 
+let hibrido = false;
+
 function ciclo(){
   if (!client || !client.connected) return;
-  atualizarSensores(); controlarBomba();
+  atualizarSensores();
+  if (hibrido){
+    const t = e.temperatura.toFixed(1), u = e.umidade.toFixed(1), l = e.luz.toFixed(0);
+    client.publish(base + '/temperatura', t, {qos:0});
+    client.publish(base + '/umidade', u, {qos:0});
+    client.publish(base + '/luz', l, {qos:0});
+    $('vT').textContent = t + '°C'; $('vU').textContent = u + '%'; $('vL').textContent = l + ' lx';
+    $('vS').textContent = 'ESP32'; $('vB').textContent = 'ESP32'; $('vM').textContent = 'híbrido';
+    log(`[HÍBRIDO] T=${t}°C U=${u}% Luz=${l}lx (solo e bomba: ESP32 real)`);
+    return;
+  }
+  controlarBomba();
   const v = {temperatura:e.temperatura.toFixed(1), umidade:e.umidade.toFixed(1),
              luz:e.luz.toFixed(0), solo:e.solo.toFixed(0)};
   for (const k in v) client.publish(`${base}/${k}`, v[k], {qos:0});
@@ -141,14 +159,24 @@ $('bStart').onclick = () => {
   base = $('iBase').value.trim().replace(/\/+$/,'');
   const host = $('iHost').value.trim().replace(/^\w+:\/\//,'').replace(/[:/].*$/,'');
   pill('Conectando…');
-  client = mqtt.connect(`wss://${host}:${$('iPort').value}/mqtt`, {
+  hibrido = $('iHibrido').checked;
+  const opts = {
     username: $('iUser').value.trim(), password: $('iPass').value,
     clientId: 'simulador-web-' + Math.random().toString(16).slice(2,8),
-    clean: true, reconnectPeriod: 4000,
-    will: {topic: base + '/status', payload: 'offline', qos: 1, retain: true}
-  });
+    clean: true, reconnectPeriod: 4000
+  };
+  // No modo híbrido o status (online/offline) é do ESP32: o simulador não mexe nele
+  if (!hibrido) opts.will = {topic: base + '/status', payload: 'offline', qos: 1, retain: true};
+  client = mqtt.connect(`wss://${host}:${$('iPort').value}/mqtt`, opts);
   client.on('connect', () => {
     pill('Simulando', 'on'); log('Conectado ao broker!');
+    if (hibrido){
+      log('Modo híbrido: publicando só temperatura, umidade do ar e luz em ' + base);
+      clearInterval(timer);
+      timer = setInterval(ciclo, Math.max(1, +$('iInt').value) * 1000);
+      ciclo();
+      return;
+    }
     client.publish(base + '/status', 'online', {qos:1, retain:true});
     client.publish(base + '/bomba/estado', e.bomba ? 'ON':'OFF', {qos:1, retain:true});
     client.subscribe(base + '/bomba/cmd', {qos:1});
@@ -170,7 +198,7 @@ $('bStart').onclick = () => {
 $('bStop').onclick = () => {
   clearInterval(timer);
   if (client){
-    if (client.connected) client.publish(base + '/status', 'offline', {qos:1, retain:true});
+    if (client.connected && !hibrido) client.publish(base + '/status', 'offline', {qos:1, retain:true});
     client.end(false); client = null;
   }
   pill('Parado'); log('Simulação parada.');
