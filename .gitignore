@@ -5,3 +5,6 @@ __pycache__/
 secrets.h
 __pycache__/
 config.py
+
+# Arquivos de bloqueio temporários do Office
+~$*
