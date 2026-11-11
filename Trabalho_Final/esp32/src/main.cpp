@@ -4,12 +4,12 @@
  *  TP546 – Internet das Coisas e Redes Veiculares – Inatel
  *  Batende Miheto · Diana Jazmin Castro Meneces
  * ---------------------------------------------------------------------
- *  Hardware: Heltec WiFi LoRa 32 V3 (USB-C) + sensor de solo FC-28
- *            + módulo relé + mini bomba d'água
+ *  Hardware: ESP32 DevKit V1 + sensor de solo (FC-28/YL-69, saída AO)
+ *            + módulo relé (ativo em LOW) + mini bomba d'água
  *  Nuvem:    EMQX Cloud (MQTT com TLS, porta 8883)
- *  Painel:   dashboard web, MQTTX e app MQTT no celular
+ *  Painel:   dashboard web, MQTTX e app IoT MQTT Panel no celular
  *
- *  ATENÇÃO: este arquivo tem senhas. NÃO suba para o GitHub com elas.
+ *  Senhas e redes ficam em  secrets.h  (aba ao lado, fora do GitHub).
  * =====================================================================
  */
 #include <Arduino.h>
@@ -17,53 +17,33 @@
 #include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
-
-#define WIFI_SSID_1    "POCO F4 GT JHAZ"
-#define WIFI_SENHA_1   "s19051698"
-
-#define WIFI_SSID_2    "WLL-Inatel"
-#define WIFI_SENHA_2   "inatelsemfio"
-
-#define WIFI_SSID_3    "Ivan_5Ghz"
-#define WIFI_SENHA_3   "salima13"
-
-// Broker MQTT (EMQX Cloud)
-const char* MQTT_HOST    = "q7d171c2.ala.us-east-1.emqxsl.com";
-const int   MQTT_PORTA   = 8883;
-const char* MQTT_USUARIO = "Batende_Diana";
-const char* MQTT_SENHA   = "Batende_Diana";
-
-#define TOPICO_BASE "inatel/batende/planta01"
+#include "secrets.h"
 
 // ============================ 1. PINOS ================================
-// Heltec V3 (USB-C, ESP32-S3): sensor no pino 7
-// Heltec V2 (micro-USB):       troque para 34
-#define SENSOR_SOLO  7
-#define RELE         0
+#define SENSOR_SOLO  34       // AO do sensor de solo (entrada analógica)
+#define RELE         5        // IN do módulo relé
 #define RELE_ON      LOW      // relé ativo em nível baixo
 #define RELE_OFF     HIGH
 
 // ======================= 2. CALIBRAÇÃO DO SENSOR ======================
-// Veja "ADC=" no Serial Monitor:  sensor no AR -> ADC_SECO
-//                                 sensor na ÁGUA -> ADC_MOLHADO
-const int ADC_SECO    = 3500;
-const int ADC_MOLHADO = 1500;
+const int ADC_SECO    = 4084;   // sensor no AR / solo seco    -> 0 %
+const int ADC_MOLHADO = 2276;   // sensor na ÁGUA / solo úmido -> 100 %
 
 // ===================== 3. CONTROLE DA IRRIGAÇÃO =======================
-const int SOLO_LIGA    = 30;                       // AUTO: liga com solo <= 30 %
-const int SOLO_DESLIGA = 70;                       // AUTO: desliga com solo >= 70 %
-const unsigned long MAX_BOMBA_MS = 2UL * 60UL * 1000UL;   // segurança: 2 min
-const unsigned long INTERVALO_MS = 2000;           // leitura a cada 2 s
+const int SOLO_LIGA    = 40;                              // AUTO: liga com solo <= 40 %
+const int SOLO_DESLIGA = 70;                              // AUTO: desliga com solo >= 70 %
+const unsigned long MAX_BOMBA_MS = 2UL * 60UL * 1000UL;   // segurança: 2 min ligada
+const unsigned long INTERVALO_MS = 2000;                  // leitura a cada 2 s
 
 // ============================ 4. TÓPICOS ==============================
-const String BASE     = TOPICO_BASE;
-const String T_SOLO   = BASE + "/solo";            // umidade do solo (%)
-const String T_ADC    = BASE + "/adc";             // leitura bruta (diagnóstico)
-const String T_ESTADO = BASE + "/bomba/estado";    // ON / OFF (retain)
-const String T_MODO   = BASE + "/modo";            // ON / OFF / AUTO (retain)
-const String T_STATUS = BASE + "/status";          // online / offline (Last Will)
-const String T_ALERTA = BASE + "/alerta";          // avisos
-const String T_CMD    = BASE + "/bomba/cmd";       // recebe: ON / OFF / AUTO
+const String BASE     = TOPICO_BASE;              // inatel/batende/planta01
+const String T_SOLO   = BASE + "/solo";           // publica: umidade do solo (%)
+const String T_ADC    = BASE + "/adc";            // publica: leitura bruta (calibração)
+const String T_ESTADO = BASE + "/bomba/estado";   // publica: ON / OFF (retain)
+const String T_MODO   = BASE + "/modo";           // publica: ON / OFF / AUTO (retain)
+const String T_STATUS = BASE + "/status";         // publica: online / offline (Last Will)
+const String T_ALERTA = BASE + "/alerta";         // publica: avisos
+const String T_CMD    = BASE + "/bomba/cmd";      // assina:  ON / OFF / AUTO
 
 // =========================== 5. VARIÁVEIS =============================
 WiFiMulti redes;
@@ -73,9 +53,9 @@ PubSubClient mqtt(redeSegura);
 String modo = "AUTO";
 bool bombaLigada = false;
 bool sensorOk = true;
+bool wifiAvisado = false;
 int  soloPct = 50;
 unsigned long bombaLigadaEm = 0, ultimaLeitura = 0, ultimoWiFi = 0, ultimoMQTT = 0;
-bool wifiAvisado = false;
 
 // ============================ 6. FUNÇÕES ==============================
 void publicar(const String& topico, const String& msg, bool reter = false) {
@@ -83,7 +63,7 @@ void publicar(const String& topico, const String& msg, bool reter = false) {
 }
 
 void definirBomba(bool ligar) {
-  if (ligar == bombaLigada) return;
+  if (ligar == bombaLigada) return;               // só age quando muda
   bombaLigada = ligar;
   bombaLigadaEm = ligar ? millis() : 0;
   digitalWrite(RELE, ligar ? RELE_ON : RELE_OFF);
@@ -95,10 +75,10 @@ void controlarBomba() {
   bool ligar = bombaLigada;
   if (modo == "ON")       ligar = true;
   else if (modo == "OFF") ligar = false;
-  else {                                           // AUTO com histerese
-    if (!sensorOk)                    ligar = false;
+  else {                                          // AUTO com histerese
+    if (!sensorOk)                    ligar = false;   // sensor desligado: não rega
     else if (soloPct <= SOLO_LIGA)    ligar = true;
-    else if (soloPct >= SOLO_DESLIGA) ligar = false;
+    else if (soloPct >= SOLO_DESLIGA) ligar = false;   // entre 40 e 70: mantém
   }
   // Segurança: tempo máximo de bomba ligada
   if (ligar && bombaLigada && millis() - bombaLigadaEm > MAX_BOMBA_MS) {
@@ -136,18 +116,19 @@ void conectarMQTT() {
     publicar(T_ESTADO, bombaLigada ? "ON" : "OFF", true);
     publicar(T_MODO, modo, true);
   } else {
-    // 4 ou 5 = usuário/senha errados; -2 = sem acesso ao broker
+    // 4 ou 5 = usuário/senha errados | -2 = sem acesso ao broker
     Serial.printf("falhou (rc=%d)\n", mqtt.state());
   }
 }
 
 void lerSolo() {
   long soma = 0;
-  for (int i = 0; i < 10; i++) { soma += analogRead(SENSOR_SOLO); delay(3); }
+  for (int i = 0; i < 10; i++) { soma += analogRead(SENSOR_SOLO); delay(10); }
   int adc = soma / 10;
 
-  // Fio solto ou no pino errado costuma dar 0 ou 4095 fixo
-  bool valido = adc > 50 && adc < 4090;
+  // Sensor sem energia ou fio solto costuma dar ~0 fixo.
+  // (Solo muito seco dá ~4095, isso é normal e NÃO é erro.)
+  bool valido = adc > 50;
   if (valido != sensorOk) {
     sensorOk = valido;
     publicar(T_ALERTA, valido ? "Sensor de solo OK"
@@ -165,16 +146,25 @@ void lerSolo() {
 // ============================== SETUP =================================
 void setup() {
   Serial.begin(115200);
-  digitalWrite(RELE, RELE_OFF);                    // relé desligado antes de virar saída
+  digitalWrite(RELE, RELE_OFF);                   // relé desligado antes de virar saída
   pinMode(RELE, OUTPUT);
-  analogReadResolution(12);                        // 0 a 4095
-  analogSetAttenuation(ADC_11db);                  // lê até ~3,3 V
+
+  pinMode(SENSOR_SOLO, INPUT);
+  analogReadResolution(12);                       // 0 a 4095
+  analogSetPinAttenuation(SENSOR_SOLO, ADC_11db); // lê até ~3,3 V
 
   WiFi.mode(WIFI_STA);
+#ifdef WIFI_SSID_1
   redes.addAP(WIFI_SSID_1, WIFI_SENHA_1);
-  if (strlen(WIFI_SSID_2) > 0) redes.addAP(WIFI_SSID_2, WIFI_SENHA_2);
+#endif
+#ifdef WIFI_SSID_2
+  redes.addAP(WIFI_SSID_2, WIFI_SENHA_2);
+#endif
+#ifdef WIFI_SSID_3
+  redes.addAP(WIFI_SSID_3, WIFI_SENHA_3);
+#endif
 
-  redeSegura.setInsecure();                        // TLS ativo (sem checar certificado)
+  redeSegura.setInsecure();                       // TLS ativo (sem checar certificado)
   mqtt.setServer(MQTT_HOST, MQTT_PORTA);
   mqtt.setCallback(aoReceber);
   Serial.println("SISTEMA DE IRRIGACAO INICIADO");
@@ -182,6 +172,7 @@ void setup() {
 
 // =============================== LOOP =================================
 void loop() {
+  // Wi-Fi: conecta na rede conhecida com melhor sinal
   if (WiFi.status() != WL_CONNECTED) {
     wifiAvisado = false;
     if (millis() - ultimoWiFi >= 10000) {
@@ -192,8 +183,8 @@ void loop() {
   } else {
     if (!wifiAvisado) {
       wifiAvisado = true;
-      Serial.printf("WiFi OK: %s | IP %s\n", WiFi.SSID().c_str(),
-                    WiFi.localIP().toString().c_str());
+      Serial.printf("WiFi OK: %s | IP %s\n",
+                    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
     }
     if (!mqtt.connected()) {
       if (millis() - ultimoMQTT >= 5000) { ultimoMQTT = millis(); conectarMQTT(); }
@@ -202,7 +193,7 @@ void loop() {
     }
   }
 
-  // Leitura do sensor e controle a cada 2 s (funciona mesmo sem internet)
+  // Leitura e controle a cada 2 s (funciona mesmo sem internet)
   if (millis() - ultimaLeitura >= INTERVALO_MS) {
     ultimaLeitura = millis();
     lerSolo();
